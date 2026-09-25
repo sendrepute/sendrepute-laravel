@@ -5,6 +5,7 @@ namespace SendRepute\Laravel\Tests;
 use GuzzleHttp\Client;
 use GuzzleHttp\Handler\MockHandler;
 use GuzzleHttp\HandlerStack;
+use GuzzleHttp\Middleware;
 use GuzzleHttp\Psr7\Response;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
@@ -47,6 +48,99 @@ final class ClassifierTest extends TestCase
         $this->expectException(SendReputeException::class);
         $this->expectExceptionMessage('explicitly enabled');
         $this->classifier([])->classify('Example', 'Subject', 'Body');
+    }
+
+    public function test_optional_authorization_sends_full_schedule_and_separate_ceiling(): void
+    {
+        $history = [];
+        $stack = HandlerStack::create(new MockHandler([
+            new Response(200, [], json_encode([
+                'requestId' => 'req-price',
+                'model' => 'thor',
+                'result' => ['label' => 'inbox', 'spamProbability' => 0.1, 'confidence' => 'high'],
+                'billing' => ['replayed' => false, 'chargedMillicents' => 2500],
+            ], JSON_THROW_ON_ERROR)),
+        ]));
+        $stack->push(Middleware::history($history));
+        $classifier = new SendReputeClassifier(new Client(['handler' => $stack]), $this->config([
+            'paid_analysis_consent' => true,
+            'price_authorization' => [
+                'enabled' => true,
+                'expected_pricing' => $this->pricing(),
+                'maximum_charge_millicents' => 3000,
+            ],
+        ]));
+
+        $result = $classifier->classify(
+            'Example',
+            'Subject',
+            'Plain',
+            displayedAlternatives: [
+                ['contentType' => 'text/plain', 'body' => 'Plain'],
+                ['contentType' => 'text/html', 'body' => '<p>HTML</p>'],
+            ],
+        );
+
+        self::assertSame(2500, $result->chargedMillicents);
+        self::assertCount(1, $history);
+        $payload = json_decode((string) $history[0]['request']->getBody(), true, flags: JSON_THROW_ON_ERROR);
+        self::assertSame([
+            'expectedPricing' => $this->pricing(),
+            'maxChargeMillicents' => 3000,
+        ], $payload['priceAuthorization']);
+        self::assertCount(2, $payload['displayedAlternatives']);
+    }
+
+    public function test_server_price_changed_is_not_retried_with_raised_consent(): void
+    {
+        $history = [];
+        $stack = HandlerStack::create(new MockHandler([
+            new Response(409, [], '{"error":{"code":"PRICE_CHANGED"},"requestId":"req-price"}'),
+        ]));
+        $stack->push(Middleware::history($history));
+        $classifier = new SendReputeClassifier(new Client(['handler' => $stack]), $this->config([
+            'paid_analysis_consent' => true,
+            'price_authorization' => [
+                'enabled' => true,
+                'expected_pricing' => $this->pricing(),
+                'maximum_charge_millicents' => 3000,
+            ],
+        ]));
+
+        try {
+            $classifier->classify('Example', 'Subject', 'Body');
+            self::fail('Expected atomic price refusal.');
+        } catch (SendReputeException $error) {
+            self::assertSame('PRICE_CHANGED', $error->apiCode);
+        }
+        self::assertCount(1, $history);
+    }
+
+    public function test_completed_replay_survives_later_rate_and_ceiling_changes(): void
+    {
+        $result = $this->classifier([
+            new Response(200, [], json_encode([
+                'requestId' => 'req-replay',
+                'model' => 'thor',
+                'result' => ['label' => 'inbox', 'spamProbability' => 0.1, 'confidence' => 'high'],
+                'billing' => ['replayed' => true, 'chargedMillicents' => 4000],
+            ], JSON_THROW_ON_ERROR)),
+        ], [
+            'paid_analysis_consent' => true,
+            'price_authorization' => [
+                'enabled' => true,
+                'expected_pricing' => [
+                    'classificationBaseMillicents' => 0,
+                    'includedUniqueTerms' => 0,
+                    'additionalTermMillicents' => 0,
+                    'maximumClassificationMillicents' => 0,
+                ],
+                'maximum_charge_millicents' => 0,
+            ],
+        ])->classify('Example', 'Same subject', 'Same body');
+
+        self::assertTrue($result->replayed);
+        self::assertSame(4000, $result->chargedMillicents);
     }
 
     public function test_score_outside_zero_to_one_is_malformed_not_spam(): void
@@ -154,5 +248,28 @@ final class ClassifierTest extends TestCase
                 self::assertSame('configuration', $error->category);
             }
         }
+    }
+
+    private function config(array $changes = []): array
+    {
+        return array_replace([
+            'paid_analysis_consent' => false,
+            'api_key' => 'test-secret',
+            'base_url' => 'https://api.example.test',
+            'trusted_hosts' => ['api.example.test'],
+            'timeout_seconds' => 1,
+            'connect_timeout_seconds' => 1,
+            'max_response_bytes' => 4096,
+        ], $changes);
+    }
+
+    private function pricing(): array
+    {
+        return [
+            'classificationBaseMillicents' => 1000,
+            'includedUniqueTerms' => 10,
+            'additionalTermMillicents' => 100,
+            'maximumClassificationMillicents' => 5000,
+        ];
     }
 }

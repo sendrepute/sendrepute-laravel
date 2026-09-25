@@ -12,6 +12,12 @@ use Throwable;
 final class SendReputeClassifier implements Classifier
 {
     private const MODELS = ['thor', 'theos', 'athena', 'odin', 'freya', 'hermes', 'ares', 'apollo'];
+    private const PRICE_FIELDS = [
+        'classificationBaseMillicents',
+        'includedUniqueTerms',
+        'additionalTermMillicents',
+        'maximumClassificationMillicents',
+    ];
 
     public function __construct(
         private readonly ClientInterface $http,
@@ -25,12 +31,13 @@ final class SendReputeClassifier implements Classifier
         string $body,
         ?string $model = null,
         bool $paidAnalysisConsent = false,
+        ?array $displayedAlternatives = null,
     ): ClassificationResult {
         if (!$paidAnalysisConsent && !($this->config['paid_analysis_consent'] ?? false)) {
             throw new SendReputeException('consent_required', 'Paid SendRepute analysis has not been explicitly enabled.');
         }
 
-        $this->validateInput($sender, $subject, $body, $model);
+        $this->validateInput($sender, $subject, $body, $model, $displayedAlternatives);
         [$baseUrl, $apiKey] = $this->validatedConnection();
         $connectTimeout = $this->boundedFloat('connect_timeout_seconds', 3.0, 0.1, 30.0);
         $timeout = $this->boundedFloat('timeout_seconds', 10.0, 0.1, 60.0);
@@ -39,8 +46,15 @@ final class SendReputeClassifier implements Classifier
             throw new SendReputeException('configuration', 'max_response_bytes must be between 1024 and 4194304.');
         }
         $payload = ['sender' => $sender, 'subject' => $subject, 'body' => $body];
+        if ($displayedAlternatives !== null) {
+            $payload['displayedAlternatives'] = $displayedAlternatives;
+        }
         if ($model !== null) {
             $payload['model'] = $model;
+        }
+        $authorization = $this->priceAuthorization();
+        if ($authorization !== null) {
+            $payload['priceAuthorization'] = $authorization;
         }
 
         try {
@@ -113,10 +127,16 @@ final class SendReputeClassifier implements Classifier
             throw new SendReputeException('malformed_response', 'SendRepute returned an invalid response object.', $status);
         }
 
-        return $this->result($decoded);
+        $result = $this->result($decoded);
+        if ($authorization !== null && !$result->replayed
+            && $result->chargedMillicents > $authorization['maxChargeMillicents']) {
+            throw new SendReputeException('malformed_response', 'SendRepute reported a charge above the authorized per-request maximum.', $status);
+        }
+
+        return $result;
     }
 
-    private function validateInput(string $sender, string $subject, string $body, ?string $model): void
+    private function validateInput(string $sender, string $subject, string $body, ?string $model, ?array $displayedAlternatives): void
     {
         foreach ([[$sender, 320, 'sender'], [$subject, 998, 'subject'], [$body, 524288, 'body']] as [$value, $limit, $field]) {
             if ($value === '' || strlen($value) > $limit || preg_match('//u', $value) !== 1) {
@@ -126,6 +146,60 @@ final class SendReputeClassifier implements Classifier
         if ($model !== null && !in_array($model, self::MODELS, true)) {
             throw new SendReputeException('malformed_request', 'The selected model is not supported.');
         }
+        if ($displayedAlternatives !== null) {
+            if ($displayedAlternatives === [] || count($displayedAlternatives) > 2) {
+                throw new SendReputeException('malformed_request', 'displayedAlternatives must contain one or two displayed parts.');
+            }
+            $combinedBytes = strlen($body);
+            foreach ($displayedAlternatives as $alternative) {
+                if (!is_array($alternative) || array_keys($alternative) !== ['contentType', 'body']
+                    || !in_array($alternative['contentType'] ?? null, ['text/plain', 'text/html'], true)
+                    || !is_string($alternative['body'] ?? null) || $alternative['body'] === ''
+                    || preg_match('//u', $alternative['body']) !== 1) {
+                    throw new SendReputeException('malformed_request', 'Each displayed alternative must have an exact supported contentType and non-empty UTF-8 body.');
+                }
+                $combinedBytes += strlen($alternative['body']);
+            }
+            if ($combinedBytes > 524288) {
+                throw new SendReputeException('malformed_request', 'The compatibility body and displayed alternatives exceed 524288 bytes.');
+            }
+        }
+    }
+
+    private function priceAuthorization(): ?array
+    {
+        $settings = $this->config['price_authorization'] ?? null;
+        if (!is_array($settings) || !($settings['enabled'] ?? false)) {
+            return null;
+        }
+        $configured = $settings['expected_pricing'] ?? null;
+        if (!is_array($configured)) {
+            throw new SendReputeException('configuration', 'Expected classification pricing must be configured deliberately.');
+        }
+        $expectedPricing = [];
+        foreach (self::PRICE_FIELDS as $field) {
+            $expectedPricing[$field] = $this->configurationInteger(
+                $configured[$field] ?? null,
+                "price_authorization.expected_pricing.{$field}",
+            );
+        }
+        $ceiling = $this->configurationInteger(
+            $settings['maximum_charge_millicents'] ?? null,
+            'price_authorization.maximum_charge_millicents',
+        );
+
+        return ['expectedPricing' => $expectedPricing, 'maxChargeMillicents' => $ceiling];
+    }
+
+    private function configurationInteger(mixed $value, string $key): int
+    {
+        if (is_string($value) && preg_match('/\A(?:0|[1-9][0-9]{0,15})\z/', $value) === 1) {
+            $value = (int) $value;
+        }
+        if (!is_int($value) || $value < 0 || $value > 9007199254740991) {
+            throw new SendReputeException('configuration', "{$key} must be an integer from 0 through 9007199254740991.");
+        }
+        return $value;
     }
 
     private function validatedConnection(): array
@@ -177,14 +251,16 @@ final class SendReputeClassifier implements Classifier
         $requestId = is_string($rawRequestId) && preg_match('/\A[A-Za-z0-9._:-]{1,128}\z/', $rawRequestId) === 1
             ? $rawRequestId
             : null;
-        $category = match ($status) {
-            400, 413 => 'malformed_request',
-            401, 403 => 'authentication',
-            402 => 'balance',
-            429 => 'rate_limit',
-            409, 503 => 'unavailable',
-            default => 'api',
-        };
+        $category = $status === 409 && $code === 'PRICE_CHANGED'
+            ? 'price_changed'
+            : match ($status) {
+                400, 413 => 'malformed_request',
+                401, 403 => 'authentication',
+                402 => 'balance',
+                429 => 'rate_limit',
+                409, 503 => 'unavailable',
+                default => 'api',
+            };
         return new SendReputeException($category, "SendRepute request failed with HTTP status {$status}.", $status, $code, $requestId);
     }
 

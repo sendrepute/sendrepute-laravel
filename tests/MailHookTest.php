@@ -62,7 +62,17 @@ final class MailHookTest extends TestCase
         $this->configure('advisory', 'allow');
         $classifier = $this->createMock(Classifier::class);
         $classifier->expects(self::once())->method('classify')
-            ->with('Sender', 'Subject', "Plain body\n\n--- HTML alternative ---\n\n<p>HTML body</p>", null)
+            ->with(
+                'Sender',
+                'Subject',
+                'Plain body',
+                null,
+                false,
+                [
+                    ['contentType' => 'text/plain', 'body' => 'Plain body'],
+                    ['contentType' => 'text/html', 'body' => '<p>HTML body</p>'],
+                ],
+            )
             ->willReturn(new ClassificationResult('id', 'thor', 'inbox', 0.1, 'high', false, 1));
         $message = $this->markedEmail()->html('<p>HTML body</p>')->text('Plain body');
 
@@ -96,6 +106,36 @@ final class MailHookTest extends TestCase
         $classifier = $this->createMock(Classifier::class);
         $classifier->method('classify')->willReturn(
             new ClassificationResult('id', 'thor', 'spam', 0.99, 'high', false, 1)
+        );
+        $this->app->instance(Classifier::class, $classifier);
+        $transport = $this->createMock(TransportInterface::class);
+        $transport->expects(self::never())->method('send');
+        $views = $this->createMock(\Illuminate\Contracts\View\Factory::class);
+        $mailer = new Mailer('test', $views, $transport, $this->app['events']);
+
+        $result = $mailer->raw('Body', function (Message $message): void {
+            $message->from('sender@example.test', 'Sender')
+                ->to('recipient@example.test')
+                ->subject('Subject');
+            $message->getSymfonyMessage()->getHeaders()
+                ->addTextHeader('X-SendRepute-Classify', 'yes');
+        });
+
+        self::assertNull($result);
+    }
+
+    public function test_price_changed_cancels_real_delivery_even_with_fail_open_policy(): void
+    {
+        $this->configure('advisory', 'allow');
+        $classifier = $this->createMock(Classifier::class);
+        $classifier->method('classify')->willThrowException(
+            new \SendRepute\Laravel\Exceptions\SendReputeException(
+                'unavailable',
+                'safe',
+                409,
+                'PRICE_CHANGED',
+                'req-price',
+            )
         );
         $this->app->instance(Classifier::class, $classifier);
         $transport = $this->createMock(TransportInterface::class);

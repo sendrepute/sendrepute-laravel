@@ -12,5 +12,6 @@ interface Classifier
         string $body,
         ?string $model = null,
         bool $paidAnalysisConsent = false,
+        ?array $displayedAlternatives = null,
     ): ClassificationResult;
 }

@@ -9,10 +9,11 @@ of inbox placement or deliverability.
 - PHP 8.2+
 - Laravel 12 and 13 (the package constraints are the authoritative range)
 - Symfony Mime messages sent through Laravel's mailer
-- In-memory string subject plus text or HTML body
+- In-memory string subject plus text and/or HTML displayed alternatives
 
 Attachments, recipients, envelopes, and raw MIME are never submitted. The API
-receives only the sender **display name**, subject, body, and optional model.
+receives only the sender **display name**, subject, all displayed in-memory
+`text/plain` and `text/html` alternatives, and optional model.
 Messages without a named sender or in-memory body follow the configured failure
 policy.
 
@@ -54,6 +55,12 @@ SENDREPUTE_MAIL_ENABLED=true
 SENDREPUTE_API_KEY=
 SENDREPUTE_API_BASE_URL=https://www.sendrepute.com/api
 SENDREPUTE_TRUSTED_HOSTS=www.sendrepute.com
+SENDREPUTE_PRICE_AUTHORIZATION_ENABLED=true
+SENDREPUTE_EXPECTED_CLASSIFICATION_BASE_MILLICENTS=
+SENDREPUTE_EXPECTED_INCLUDED_UNIQUE_TERMS=
+SENDREPUTE_EXPECTED_ADDITIONAL_TERM_MILLICENTS=
+SENDREPUTE_EXPECTED_MAXIMUM_CLASSIFICATION_MILLICENTS=
+SENDREPUTE_MAXIMUM_CHARGE_MILLICENTS=
 ```
 
 The base URL must use verified HTTPS, contain no credentials/query/fragment,
@@ -61,6 +68,19 @@ and match an exact trusted hostname. Put the server-side key after
 `SENDREPUTE_API_KEY=` in the deployment's secret environment, not in a checked
 in file. Redirects are refused. Never put these values in browser-side
 configuration or logs.
+
+Price authorization also defaults off for compatibility. Before enabling it,
+call authenticated `GET /api/v1/pricing`, deliberately copy its complete
+four-field effective rate schedule into the four `EXPECTED_` values, and choose
+an explicit per-request `MAXIMUM_CHARGE_MILLICENTS`. The ceiling may be lower
+than the schedule maximum; it is not a fixed final quote. Every paid operation
+sends the approved schedule plus that unchanged ceiling in
+`priceAuthorization`. Settlement atomically rechecks them and rejects rate or
+membership drift and charges above the ceiling without a debit. A
+`PRICE_CHANGED` response never updates consent automatically and always cancels
+the opted-in message, even when `mail.failure_policy` is `allow`. Exact
+completed replays remain receipts rather than new charges, while API-key
+cumulative caps remain independent account safeguards.
 
 Even after those switches are enabled, each outgoing message must explicitly
 opt in:
@@ -99,8 +119,9 @@ cannot change delivery.
 Laravel's `Illuminate\Mail\Events\MessageSending` is the pre-send cancellation
 hook: Laravel's mailer checks the event dispatch result and skips transport when
 a listener returns `false`. Throwing from this listener is intentionally
-avoided; this package returns `false` only for an explicit blocking decision or
-fail-closed policy. A skipped send is not Laravel's post-send `MessageSent`
+avoided; this package returns `false` for an explicit blocking decision,
+fail-closed policy, or a `PRICE_CHANGED` billing-consent refusal. A skipped send
+is not Laravel's post-send `MessageSent`
 event and is not an SMTP failure.
 
 ## Manual classification
@@ -119,7 +140,7 @@ $result = $classifier->classify(
 Per-call consent or global paid-analysis consent is required. Errors are
 `SendReputeException` with a non-secret category:
 `consent_required`, `configuration`, `malformed_request`, `transport`,
-`authentication`, `balance`, `rate_limit`, `unavailable`, `api`, or
+`authentication`, `balance`, `rate_limit`, `unavailable`, `price_changed`, `api`, or
 `malformed_response`. There are no automatic retries, avoiding duplicate paid
 attempts; callers should not retry paid requests arbitrarily.
 

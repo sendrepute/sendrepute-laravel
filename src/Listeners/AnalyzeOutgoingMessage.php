@@ -55,7 +55,8 @@ final class AnalyzeOutgoingMessage
             $this->validatePolicy($settings);
             $sender = $this->sender($event->message);
             $subject = $event->message->getSubject();
-            $body = $this->body($event->message);
+            $alternatives = $this->alternatives($event->message);
+            $body = $alternatives[0]['body'];
             if (!is_string($subject)) {
                 throw new \UnexpectedValueException('Subject and body must be in-memory strings.');
             }
@@ -65,9 +66,15 @@ final class AnalyzeOutgoingMessage
                 $subject,
                 $body,
                 is_string($model) ? $model : null,
+                displayedAlternatives: $alternatives,
             );
         } catch (Throwable $error) {
-            $this->reportFailure($error, $settings);
+            $mustBlock = $error instanceof SendReputeException
+                && ($error->apiCode === 'PRICE_CHANGED' || $error->category === 'price_changed');
+            $this->reportFailure($error, $settings, $mustBlock);
+            if ($mustBlock) {
+                return false;
+            }
             return $this->failureDecision($settings);
         }
 
@@ -93,18 +100,19 @@ final class AnalyzeOutgoingMessage
         return trim($name);
     }
 
-    private function body(Email $message): string
+    private function alternatives(Email $message): array
     {
         $text = $message->getTextBody();
         $html = $message->getHtmlBody();
-        if ($text !== null && $html !== null) {
-            return $text."\n\n--- HTML alternative ---\n\n".$html;
-        }
+        $alternatives = [];
         if ($text !== null) {
-            return $text;
+            $alternatives[] = ['contentType' => 'text/plain', 'body' => $text];
         }
         if ($html !== null) {
-            return $html;
+            $alternatives[] = ['contentType' => 'text/html', 'body' => $html];
+        }
+        if ($alternatives !== []) {
+            return $alternatives;
         }
         throw new \UnexpectedValueException('An in-memory text or HTML body is required.');
     }
@@ -127,9 +135,9 @@ final class AnalyzeOutgoingMessage
         return ($settings['failure_policy'] ?? 'allow') === 'block' ? false : null;
     }
 
-    private function reportFailure(Throwable $error, array $settings): void
+    private function reportFailure(Throwable $error, array $settings, bool $forceBlock = false): void
     {
-        $blocked = $this->failureDecision($settings) === false;
+        $blocked = $forceBlock || $this->failureDecision($settings) === false;
         if ($error instanceof SendReputeException) {
             $this->report(new ClassificationOutcome(
                 'api_failure',

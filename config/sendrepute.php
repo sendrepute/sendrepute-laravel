@@ -23,6 +23,23 @@ return [
     'connect_timeout_seconds' => 3.0,
     'max_response_bytes' => 1048576,
 
+    /*
+     * Optional atomic price authorization. Before enabling it, fetch the
+     * authenticated /v1/pricing response and deliberately copy all four
+     * effective values below. maximum_charge_millicents is a separate,
+     * per-request ceiling and may be lower than the published maximum.
+     */
+    'price_authorization' => [
+        'enabled' => (bool) env('SENDREPUTE_PRICE_AUTHORIZATION_ENABLED', false),
+        'expected_pricing' => [
+            'classificationBaseMillicents' => env('SENDREPUTE_EXPECTED_CLASSIFICATION_BASE_MILLICENTS'),
+            'includedUniqueTerms' => env('SENDREPUTE_EXPECTED_INCLUDED_UNIQUE_TERMS'),
+            'additionalTermMillicents' => env('SENDREPUTE_EXPECTED_ADDITIONAL_TERM_MILLICENTS'),
+            'maximumClassificationMillicents' => env('SENDREPUTE_EXPECTED_MAXIMUM_CLASSIFICATION_MILLICENTS'),
+        ],
+        'maximum_charge_millicents' => env('SENDREPUTE_MAXIMUM_CHARGE_MILLICENTS'),
+    ],
+
     'mail' => [
         'enabled' => (bool) env('SENDREPUTE_MAIL_ENABLED', false),
         'opt_in_header' => 'X-SendRepute-Classify',
