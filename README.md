@@ -170,3 +170,47 @@ Use GitHub issues for reproducible, non-sensitive bugs. Account support and
 private vulnerability reports: support@sendrepute.com. Never include API keys,
 customer messages or unredacted logs. See [SECURITY.md](SECURITY.md).
 MIT licensed; see LICENSE.
+## Customer API client and operator console
+
+`SendRepute\Laravel\CustomerApi\CustomerApiClient` covers all 49 operations of the customer API contract, including the three paid-result recovery operations under `/customer/paid-results`. Call any operation with `call($operationId, ['params' => [...], 'query' => [...], 'body' => [...]], $options)`.
+
+- It uses one fixed HTTPS origin (`https://www.sendrepute.com/api`). Other hosts must be added to an exact allowlist.
+- It never retries a request and refuses redirects and non-JSON responses. Responses are capped at `max_response_bytes`.
+- Path and query parameters are checked against the contract patterns and bounds. Request bodies may only contain allowlisted fields, up to 512 KiB.
+- Paid operations require `['paidConsent' => ['acknowledged' => true, 'expectedPriceMillicents' => N]]`. That price is written to, or checked against, the operation's price field.
+- Billing and recovery actions require `['confirm' => true]`.
+
+The operator console is **off by default**. Set `SENDREPUTE_CUSTOMER_API_KEY` and `SENDREPUTE_CUSTOMER_CONSOLE_ENABLED=true`, then define the gate:
+
+```php
+Gate::define('sendrepute-customer-api', fn ($user) => $user->is_admin);
+```
+
+The console is mounted at `customer_api.console.path`, behind `web`, `auth` and `can:sendrepute-customer-api`. Its safeguards:
+
+- The API key stays on the server.
+- Calls need the session CSRF token in `X-CSRF-Token` and a same-origin `Origin` header.
+- A paid operation needs its quote operation to have run in the same session within the last 15 minutes. That quote is used up by the paid call.
+- Only one paid or billing call can be in flight per session.
+- Results are shown as inert JSON or a sandboxed preview, and can be downloaded as files.
+- Hosted builder handoff stays disabled until `SENDREPUTE_HANDOFF_RETURN_ORIGIN` is set.
+
+The existing mail classification hook is unchanged.
+
+## Paid-intent ledger (anti-duplicate)
+
+Every paid or billing console call is recorded in a durable intent ledger **before** the request is sent. The identity is the credential fingerprint, operation, method, path and canonical body. An identical request is refused (409 `INTENT_LOCKED` / `INTENT_COMPLETED`) from any session, worker or restart while the intent is pending, ambiguous (timeout, transport error, 5xx, 408/425, malformed response) or completed. Definitive 4xx refusals unlock it. The upstream replay identity (`recoveryId`, or `analysisId`) is generated once, persisted with the intent and reused on resend, so the server can deduplicate. Operators review intents with the **Paid intents** button and release one only with a reason and an explicit confirmation. Releasing a completed intent issues a fresh replay id for a deliberate second charge. Pending intents are never released online or by timeout, because a stalled worker may still have the request in flight. After a worker crash, stop every worker and run `$store->recoverPendingAfterShutdown(true, time())`; leftover pending intents become ambiguous for reconciliation and release. With no ledger configured, paid and billing operations return 503 `INTENT_STORE_REQUIRED`. The filesystem store supports a **single host only**, and it refuses to start unless you acknowledge that and its directory is absolute, `0700` and owned by the server user. Prices are always sent upstream for server-side enforcement, and a charge above consent is flagged. Classification (`classifyCustomerEmail`, POST /v1/classify) sends `priceAuthorization` with the four effective rates returned by this session's latest GET /v1/pricing plus the operator's ceiling. A confirmation that no longer matches the latest rates is refused (409 `PRICE_CONFIRMATION_STALE`) before anything is sent. The server re-checks rates and ceiling atomically at settlement (409 `PRICE_CHANGED`, no debit). Manual edit reclassification (`customerClassifyEmail`, POST /v1/classify/edit) has no price field in its request schema (`CustomerManualEditInput`, additionalProperties false); the server prices it authoritatively.
+
+Configure `sendrepute.customer_api.console.intent_store`:
+
+```env
+# Recommended: a shared cache store with atomic locks (redis, database, memcached, dynamodb). array/null drivers are refused.
+SENDREPUTE_INTENT_STORE=cache
+SENDREPUTE_INTENT_CACHE_STORE=redis
+# Or, on a single host only:
+# SENDREPUTE_INTENT_STORE=filesystem
+# SENDREPUTE_INTENT_PATH=/var/www/storage/sendrepute-intents
+# SENDREPUTE_INTENT_SINGLE_HOST=true
+```
+
+Intents are stored without expiry, so use a cache store that does not evict keys.

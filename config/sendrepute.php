@@ -48,4 +48,41 @@ return [
         'failure_policy' => 'allow', // allow or block
         'model' => null,
     ],
+
+    /*
+     * Customer API client and operator console. The console is off by default.
+     * When enabled it is mounted at console.path behind console.middleware; the
+     * default gate "sendrepute-customer-api" is not defined by this package, so
+     * no user can open it until the application defines that gate. The API key
+     * stays on the server and is never sent to the browser.
+     */
+    'customer_api' => [
+        'api_key' => env('SENDREPUTE_CUSTOMER_API_KEY'),
+        'base_url' => env('SENDREPUTE_CUSTOMER_API_BASE_URL', 'https://www.sendrepute.com/api'),
+        'trusted_hosts' => ['www.sendrepute.com'],
+        'timeout_seconds' => 20.0,
+        'max_response_bytes' => 8388608,
+        'console' => [
+            'enabled' => (bool) env('SENDREPUTE_CUSTOMER_CONSOLE_ENABLED', false),
+            'path' => 'sendrepute/customer-api',
+            'middleware' => ['web', 'auth', 'can:sendrepute-customer-api'],
+            // Exact https origin for hosted builder handoffs; null disables that operation.
+            'handoff_return_origin' => env('SENDREPUTE_HANDOFF_RETURN_ORIGIN'),
+            // null enables every catalog operation; or list operation ids.
+            'enabled_operations' => null,
+            /*
+             * Durable paid-intent ledger. Paid and billing operations are refused
+             * until this is configured. driver: null (deny), 'cache' (a Laravel
+             * cache store with atomic locks; array/null drivers are refused), or
+             * 'filesystem' (SINGLE HOST ONLY; requires single_host => true and an
+             * absolute 0700 directory owned by the PHP user).
+             */
+            'intent_store' => [
+                'driver' => env('SENDREPUTE_INTENT_STORE'),
+                'cache_store' => env('SENDREPUTE_INTENT_CACHE_STORE'),
+                'path' => env('SENDREPUTE_INTENT_PATH'),
+                'single_host' => (bool) env('SENDREPUTE_INTENT_SINGLE_HOST', false),
+            ],
+        ],
+    ],
 ];

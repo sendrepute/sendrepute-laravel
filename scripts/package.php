@@ -23,7 +23,8 @@ $iterator = new RecursiveIteratorIterator(
     new RecursiveDirectoryIterator($root.'/src', FilesystemIterator::SKIP_DOTS)
 );
 foreach ($iterator as $file) {
-    if (!$file->isFile() || $file->isLink() || $file->getExtension() !== 'php') {
+    $customerApiResource = preg_match('#/src/CustomerApi/resources/(customer-api-operations\.json|admin-ui\.html)\z#', str_replace('\\', '/', $file->getPathname())) === 1;
+    if (!$file->isFile() || $file->isLink() || ($file->getExtension() !== 'php' && !$customerApiResource)) {
         fwrite(STDERR, "Refusing unexpected source entry: {$file->getPathname()}\n");
         exit(1);
     }
