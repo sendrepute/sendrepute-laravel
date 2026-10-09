@@ -1,5 +1,11 @@
 # SendRepute for Laravel
 
+## Control panel preview
+
+![SendRepute Laravel console](https://raw.githubusercontent.com/sendrepute/sendrepute-laravel/main/docs/screenshots/dashboard.webp)
+
+The shipped integration console in a local framework host with sample data, not a live customer account. See `docs/screenshots/dashboard.provenance.json` for capture details.
+
 An explicit, server-side Laravel integration for SendRepute's paid email
 classification API. Classification is a content safety signal, not a guarantee
 of inbox placement or deliverability.

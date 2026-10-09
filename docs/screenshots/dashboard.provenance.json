@@ -1,0 +1,20 @@
+{
+  "integration": "laravel",
+  "files": [
+    "artifacts/spam-signal/public/integration-previews/laravel.webp",
+    "integrations/laravel/docs/screenshots/dashboard.webp"
+  ],
+  "sha256": "bd0deb13e0e3bb2ff15a12edb28eebe703b75b2246b18660b35248e34bac777a",
+  "capture": {
+    "method": "Real Chromium screenshot via playwright-core 1.62.1",
+    "viewport": "1440x1000 (CSS px)",
+    "date": "2026-10-09",
+    "state": "Initial signed-in overview after page load; no operation selected or executed"
+  },
+  "host": "Native Laravel v13.33.0 application (Illuminate\\Foundation\\Application::configure, real HTTP kernel, web/session/auth/can middleware) in /tmp/sr-shots/lhost served by php -S; registers shipped SendRepute\\Laravel\\SendReputeServiceProvider which mounts its own routes at /sendrepute/customer-api; shipped CustomerConsoleController renders the page. Product label \"Laravel\" is the value hard-coded by the shipped provider.",
+  "url_path": "/sendrepute/customer-api",
+  "bound": "127.0.0.1 only, temporary /tmp server, stopped after capture",
+  "demo_data_boundary": "Synthetic local account only (fixture account acct_fixture / operator@fixture.invalid). Upstream SendRepute API replaced by an in-process fixture transport; no network, live API, or paid calls. Random disposable fixture API key held server-side and never rendered; operator token (Node hosts) entered into a masked field and not visible. Throwaway 0700 intent ledger in /tmp. No project or production database used.",
+  "operation_count_note": "Framework hosts show 48 of 49 operations because no handoff_return_origin was configured, so the hosted builder handoff is disabled by the shipped code.",
+  "caption": "SendRepute customer console from the laravel integration, running locally with a synthetic sample account and fixture transport. Not a live account."
+}
